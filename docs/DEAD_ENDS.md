@@ -300,6 +300,82 @@ MediaSource.buffered returns a TimeRanges object. Heap layout manipulation via a
 
 Canvas backing store uses tryFastCalloc (calloc = zero-init). Even if freed backing store memory contains pointers, reclaiming it with a new canvas zeros it. getImageData always returns zero-initialized pixel data.
 
+
+### string-OOL 768-bin reclaim (initial run unlocalized; follow-up invalid)
+
+Beacon captures via POST beacon sink; 64 forged reads through the aliased
+`lineWidth` across the full 29-entry target list (stack / PS5 VA / mmap / exe
+/ lib bands), multiple fresh-scan cycles after clean scan-state wipes. No
+post-read beacons: attempts reached PRE-READ and the renderer then recovered.
+The initial payload did not zero `m_canvas` (+32) or the CallTracer flag
+(byte 28); see follow-up discussion in issue #50. Therefore these crashes do
+not establish whether the read faulted, CallTracer dereferenced invalid state,
+or dispatch failed. The initial result is unlocalized, not a demonstrated
+failure of the string-OOL reclaim primitive.
+
+The zeroed-payload follow-up discussed in issue #50 was also invalid and is
+not evidence: its SELF-REF mode left the Vector triple zero (null/invalid
+buffer), its marker overwrote bytes +36..+39 of `m_canvas`, and the other modes
+did not install a valid vptr. Its `payload + ''` loop only counted string
+lengths; it did not retain 200 independently allocated strings to demonstrate
+reclaim. The timer beacon was scheduled after the risky reads, so its absence
+did not localize the failure. Issue #47's 13.00 evidence that a zero vptr
+crashes before its read path is relevant, but does not prove the cause on
+14.10. Further testing requires a verified reclaim and a coherent, validly
+dispatched object; no positive or negative forged-read result is claimed here.
+
+### OOB state stack read via save/restore count mismatch - DEAD, 2026-10-27 (device evidence, second confirm)
+
+Implemented per the RESEARCH_MAP candidate (8x save() inside the opts getter
+before the bitmaprenderer swap, 500x 0-save same-type reclaim, then 9x
+restore() through the dangling alias): 98 clean attempts on device. restore()
+acts on the live vector view exactly as V723 found - the size() guard swallows
+all stacking, zero OOB, zero crash, and post-restore reads are byte-identical
+to pre-restore across all tested state fields. Reads through the alias return
+the reclaiming ctx's default state right after reclaim, confirming the
+alias-path/live-ctx equivalence again. No pointer-shaped reads anywhere.
+
+### createImageBitmap conversion battery - copy-safe, 2026-10-27 (device evidence)
+
+The full documented battery plus fresh variants, with a healthy same-type
+reclaim active under every mode (a decomposition without the 500x reclaim
+dies in GC visiting the unreclaimed dangling wrapper before even the control
+beacon - reproducing the known unfired-wrapper hazard, worth noting for anyone
+splitting this battery). Results:
+
+- Source canvas backing freed/shrunk inside a conversion getter: CIB resolves
+  cleanly, draw/getImageData read back unchanged.
+- Resolved ImageBitmap drawn before AND after aggressive source churn
+  (resize + 40 repaints): pixel data identical both times (16,32,48 = #102030).
+  The CIB backing store is not UAF-reachable through drawImage/getImageData.
+- resizeWidth-getter resize during conversion: resolves and draws; no bypass.
+- T1 options-dict rejection case: rejected pre-conversion, no memory-safety
+  signal.
+
+### Nested UAF chain with healthy reclaim, inside the CIB getter - STABLE, family closed, 2026-10-27
+
+The complete canonical chain (trigger -> immediate 500x same-type reclaim ->
+marker write/read) executed inside the createImageBitmap options getter, i.e.
+during a live conversion, across 28 clean attempts on device. Modes: single
+chain; two chains in one getter; chain plus self-converting reentrancy
+(createImageBitmap of the outer source canvas inside its own conversion
+getter). Every chain stayed coherent (marker round-trip alive), every outer
+conversion resolved, and the deferred lifecycle recheck after the conversion
+lifecycle settled read the chain's marker alive in every attempt. The nested
+self-converting conversion resolved (8x8 result) with no corruption.
+
+Verdict: conversion-time reentrancy is a stable context for the confirmed
+chain; the CIB family exposes no additional UAF hazard on the JS-visible side
+and does not yield the missing info leak. The standing chain gap remains a
+heap-pointer primitive to feed the forged-lineDash arbitrary R/W design
+(CONFIRMED_VULNS), which is still blocked.
+
+(For anyone running these batteries through custom hosts: prefer POST-style
+probe beacons. A host variant without a GET beacon route silently 404'd the
+GET-beacon probes and produced no captures; POST captures landed cleanly,
+98-126 beacons per battery run.)
+
+
 ---
 
 ## Summary
